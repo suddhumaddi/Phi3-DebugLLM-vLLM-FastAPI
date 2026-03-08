@@ -1,0 +1,162 @@
+# =============================================================
+# DebugLLM - Docker Compose Self-Hosted Deployment
+# =============================================================
+# Spins up the full DebugLLM stack locally or on any Docker host:
+#   - vLLM inference server (GPU)
+#   - FastAPI backend
+#   - Redis cache
+#   - Nginx reverse proxy / rate limiter
+#
+# Prerequisites:
+#   - Docker >= 24.0 with NVIDIA Container Toolkit
+#   - NVIDIA GPU with >= 16GB VRAM
+#   - .env file (copy from .env.example and fill in values)
+#
+# Usage:
+#   docker compose up -d               # start all services
+#   docker compose logs -f backend     # tail backend logs
+#   docker compose down                # stop all services
+#   docker compose down -v             # stop and remove volumes
+
+version: "3.9"
+
+services:
+
+  # ------------------------------------------------------------------
+  # vLLM Inference Server
+  # Serves Phi-3 Mini + LoRA adapter via OpenAI-compatible API
+  # ------------------------------------------------------------------
+  vllm:
+    image: vllm/vllm-openai:v0.4.2
+    container_name: debugllm-vllm
+    restart: unless-stopped
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - HUGGING_FACE_HUB_TOKEN=${HF_TOKEN}
+    volumes:
+      - model_cache:/root/.cache/huggingface
+    command: >
+      --model microsoft/Phi-3-mini-4k-instruct
+      --enable-lora
+      --lora-modules debugllm=Sud1212/phi3-debug-llm-lora
+      --max-lora-rank 16
+      --gpu-memory-utilization 0.85
+      --max-num-seqs 32
+      --dtype float16
+      --port 8001
+      --trust-remote-code
+    ports:
+      - "8001:8001"
+    networks:
+      - debugllm-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s        # Allow time for model loading
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  # ------------------------------------------------------------------
+  # Redis Cache
+  # Caches identical prompts to reduce GPU calls and cost
+  # ------------------------------------------------------------------
+  redis:
+    image: redis:7.2-alpine
+    container_name: debugllm-redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+      --requirepass ${REDIS_PASSWORD}
+    volumes:
+      - redis_data:/data
+    networks:
+      - debugllm-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ------------------------------------------------------------------
+  # FastAPI Backend Service
+  # Handles request processing, prompt formatting, auth, caching
+  # ------------------------------------------------------------------
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: debugllm-backend
+    restart: unless-stopped
+    environment:
+      - VLLM_BASE_URL=http://vllm:8001
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
+      - API_SECRET_KEY=${API_SECRET_KEY}
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY}
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY}
+      - LANGFUSE_HOST=${LANGFUSE_HOST:-https://cloud.langfuse.com}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - ENVIRONMENT=${ENVIRONMENT:-production}
+    ports:
+      - "8000:8000"
+    networks:
+      - debugllm-net
+    depends_on:
+      vllm:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # ------------------------------------------------------------------
+  # Nginx Reverse Proxy
+  # Handles TLS termination, rate limiting, and request routing
+  # ------------------------------------------------------------------
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: debugllm-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./deploy/certs:/etc/nginx/certs:ro    # Mount TLS certs here
+    networks:
+      - debugllm-net
+    depends_on:
+      - backend
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+# ------------------------------------------------------------------
+# Networks
+# ------------------------------------------------------------------
+networks:
+  debugllm-net:
+    driver: bridge
+
+# ------------------------------------------------------------------
+# Volumes
+# ------------------------------------------------------------------
+volumes:
+  model_cache:
+    driver: local
+  redis_data:
+    driver: local
