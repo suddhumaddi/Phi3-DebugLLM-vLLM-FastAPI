@@ -1,0 +1,91 @@
+# =============================================================
+# DebugLLM - Model & Inference Configuration
+# =============================================================
+
+model:
+  name: "Sud1212/phi3-debug-llm-lora"
+  base_model: "microsoft/Phi-3-mini-4k-instruct"
+  source: "huggingface"
+  parameters: "3.8B"
+  context_length: 4096
+  quantization: "awq-int4"           # INT4 AWQ quantization for production
+  dtype: "float16"                   # fallback if quantization not applied
+  max_output_tokens: 512
+  trust_remote_code: true
+
+inference:
+  engine: "vllm"
+  tensor_parallel_size: 1            # single GPU
+  gpu_memory_utilization: 0.85
+  max_num_seqs: 32                   # max concurrent sequences
+  max_num_batched_tokens: 4096
+  enable_prefix_caching: true        # cache prompt prefixes
+  swap_space: 4                      # CPU swap space in GB
+
+generation:
+  temperature: 0.1                   # low temp for deterministic code fixes
+  top_p: 0.95
+  repetition_penalty: 1.05
+  stop_sequences:
+    - "### Instruction:"
+    - "<|endoftext|>"
+    - "```\n\n"
+
+serving:
+  host: "0.0.0.0"
+  port: 8000
+  api_key_required: true
+  max_request_size_bytes: 32768      # 32KB max input
+  request_timeout_seconds: 60
+
+rate_limiting:
+  requests_per_minute_per_user: 100
+  requests_per_day_per_user: 5000
+  burst_limit: 20
+
+infrastructure:
+  cloud_provider: "aws"
+  region: "us-east-1"
+  instance_type: "g5.xlarge"
+  gpu: "nvidia-a10g"
+  vram_gb: 24
+  vcpu: 4
+  ram_gb: 16
+  auto_scaling:
+    min_instances: 1
+    max_instances: 4
+    scale_up_threshold_rps: 8        # requests/sec
+    scale_down_threshold_rps: 2
+    cooldown_seconds: 300
+
+monitoring:
+  langfuse:
+    enabled: true
+    flush_interval_seconds: 10
+  cloudwatch:
+    enabled: true
+    metrics_interval_seconds: 60
+    log_retention_days: 30
+  litellm:
+    enabled: true
+    budget_limit_usd_per_day: 50.0
+
+cache:
+  redis:
+    enabled: true
+    host: "redis"
+    port: 6379
+    ttl_seconds: 3600                # 1 hour cache for identical prompts
+    max_memory_mb: 512
+
+security:
+  jwt_expiry_minutes: 60
+  api_key_rotation_days: 90
+  input_max_lines: 200
+  input_max_chars: 8000
+  blocked_patterns:
+    - "__import__"
+    - "exec("
+    - "eval("
+    - "os.system"
+    - "subprocess"
