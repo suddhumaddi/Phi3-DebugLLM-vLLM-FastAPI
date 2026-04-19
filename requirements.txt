@@ -1,0 +1,22 @@
+# Core ML / LLM training
+transformers==4.41.2
+peft==0.11.1
+trl==0.8.6
+datasets==2.19.0
+accelerate==0.30.1
+bitsandbytes==0.43.1
+
+# PyTorch
+torch==2.3.0
+
+# Experiment tracking
+wandb==0.17.0
+
+# Tokenization / utilities
+sentencepiece
+scipy
+numpy
+tqdm
+
+# Hugging Face
+huggingface_hub==0.23.2
